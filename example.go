@@ -21,7 +21,7 @@ const (
 	nicNameBackEnd  = "nic3"
 	accountName     = "golangrocksonazure"
 	vmName          = "vm"
-	vhdURItemplate  = "https://%s.blob.core.windows.net/golangcontainer/%s.vhd"
+	vhdURItemplate  = "https://%s.blob.%s/golangcontainer/%s.vhd"
 )
 
 // This example requires that the following environment vars are set:
@@ -107,7 +107,7 @@ func createVirtualNetwork() {
 	onErrorFail(err, "CreateOrUpdate failed")
 }
 
-func createSubnets() *[]network.Subnet {
+func createSubnets() []network.Subnet {
 	fmt.Println("Create subnets")
 	subnet := network.Subnet{
 		SubnetPropertiesFormat: &network.SubnetPropertiesFormat{},
@@ -125,11 +125,11 @@ func createSubnets() *[]network.Subnet {
 
 		subnets = append(subnets, subnetInfo)
 	}
-	return &subnets
+	return subnets
 }
 
 // createPIP creates a public IP address
-func createPIP(pipName string) *network.PublicIPAddress {
+func createPIP(pipName string) network.PublicIPAddress {
 	fmt.Printf("Create public IP address: '%s'\n", pipName)
 	pip := network.PublicIPAddress{
 		Location: to.StringPtr(westUS),
@@ -146,10 +146,10 @@ func createPIP(pipName string) *network.PublicIPAddress {
 	pip, err = addressClient.Get(groupName, pipName, "")
 	onErrorFail(err, "Get failed")
 
-	return &pip
+	return pip
 }
 
-func createNICs(subnets *[]network.Subnet, pip *network.PublicIPAddress) *[]network.Interface {
+func createNICs(subnets []network.Subnet, pip network.PublicIPAddress) []network.Interface {
 	fmt.Println("Create network interfaces (NICs)")
 	nic := network.Interface{
 		Location: to.StringPtr(westUS),
@@ -170,14 +170,14 @@ func createNICs(subnets *[]network.Subnet, pip *network.PublicIPAddress) *[]netw
 	}
 	nics := []network.Interface{}
 	for i, n := range nicNames {
-		fmt.Printf("\tCreate NIC '%s' using subnet '%s'\n", n, *(*subnets)[i].Name)
+		fmt.Printf("\tCreate NIC '%s' using subnet '%s'\n", n, *subnets[i].Name)
 		(*nic.IPConfigurations)[0].Name = to.StringPtr(fmt.Sprintf("IPconfig%v", i+1))
-		(*nic.IPConfigurations)[0].Subnet = &(*subnets)[i]
+		(*nic.IPConfigurations)[0].Subnet = &subnets[i]
 
 		if n == nicNameFrontEnd {
 			nic.EnableIPForwarding = to.BoolPtr(true)
 			(*nic.IPConfigurations)[0].Primary = to.BoolPtr(true)
-			(*nic.IPConfigurations)[0].PublicIPAddress = pip
+			(*nic.IPConfigurations)[0].PublicIPAddress = &pip
 		} else {
 			nic.EnableIPForwarding = nil
 			(*nic.IPConfigurations)[0].Primary = nil
@@ -192,7 +192,7 @@ func createNICs(subnets *[]network.Subnet, pip *network.PublicIPAddress) *[]netw
 
 		nics = append(nics, nicInfo)
 	}
-	return &nics
+	return nics
 }
 
 func createStorageAccount() {
@@ -207,10 +207,10 @@ func createStorageAccount() {
 	onErrorFail(err, "Create failed")
 }
 
-func buildNIRs(nics *[]network.Interface) *[]compute.NetworkInterfaceReference {
+func buildNIRs(nics []network.Interface) []compute.NetworkInterfaceReference {
 	fmt.Println("Assign NIC to Network Interface References (NIRs) ")
 	nirs := []compute.NetworkInterfaceReference{}
-	for i, nic := range *nics {
+	for i, nic := range nics {
 		fmt.Printf("\tAssign NIC '%s' to NIR %v\n", *nic.Name, i)
 		nir := compute.NetworkInterfaceReference{
 			ID: nic.ID,
@@ -227,10 +227,10 @@ func buildNIRs(nics *[]network.Interface) *[]compute.NetworkInterfaceReference {
 		}
 		nirs = append(nirs, nir)
 	}
-	return &nirs
+	return nirs
 }
 
-func createVM(nirs *[]compute.NetworkInterfaceReference) {
+func createVM(nirs []compute.NetworkInterfaceReference) {
 	fmt.Println("Create VM with the assigned NIRs")
 	vm := compute.VirtualMachine{
 		Location: to.StringPtr(westUS),
@@ -248,7 +248,7 @@ func createVM(nirs *[]compute.NetworkInterfaceReference) {
 				OsDisk: &compute.OSDisk{
 					Name: to.StringPtr("osDisk"),
 					Vhd: &compute.VirtualHardDisk{
-						URI: to.StringPtr(fmt.Sprintf(vhdURItemplate, accountName, vmName)),
+						URI: to.StringPtr(fmt.Sprintf(vhdURItemplate, accountName, azure.PublicCloud.StorageEndpointSuffix, vmName)),
 					},
 					CreateOption: compute.FromImage,
 				},
@@ -264,24 +264,24 @@ func createVM(nirs *[]compute.NetworkInterfaceReference) {
 		},
 	}
 
-	vm.VirtualMachineProperties.NetworkProfile.NetworkInterfaces = nirs
+	vm.VirtualMachineProperties.NetworkProfile.NetworkInterfaces = &nirs
 
 	_, err := vmClient.CreateOrUpdate(groupName, vmName, vm, nil)
 	onErrorFail(err, "CreateOrUpdate failed")
 
 }
 
-func updateNICwithPIP(nicName string, nics *[]network.Interface, pip *network.PublicIPAddress) {
+func updateNICwithPIP(nicName string, nics []network.Interface, pip network.PublicIPAddress) {
 	var index int
-	for i, nic := range *nics {
+	for i, nic := range nics {
 		if *nic.Name == nicName {
 			index = i
 		}
 	}
 	fmt.Printf("Update NIC '%s' with PIP '%s'\n", nicName, *pip.Name)
-	(*(*nics)[index].IPConfigurations)[0].PublicIPAddress = pip
-	(*(*nics)[index].IPConfigurations)[0].Primary = to.BoolPtr(true)
-	_, err := interfacesClient.CreateOrUpdate(groupName, nicName, (*nics)[index], nil)
+	(*nics[index].IPConfigurations)[0].PublicIPAddress = &pip
+	(*nics[index].IPConfigurations)[0].Primary = to.BoolPtr(true)
+	_, err := interfacesClient.CreateOrUpdate(groupName, nicName, nics[index], nil)
 	onErrorFail(err, "CreateOrUpdate failed")
 }
 
