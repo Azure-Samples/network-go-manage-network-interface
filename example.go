@@ -47,12 +47,12 @@ func init() {
 	tenantID := getEnvVarOrExit("AZURE_TENANT_ID")
 
 	oauthConfig, err := azure.PublicCloud.OAuthConfigForTenant(tenantID)
-	onErrorFail(err, "OAuthConfigForTenant failed")
+	onErrorFail(err, "Getting authentication token: OAuthConfigForTenant failed")
 
 	clientID := getEnvVarOrExit("AZURE_CLIENT_ID")
 	clientSecret := getEnvVarOrExit("AZURE_CLIENT_SECRET")
 	spToken, err := azure.NewServicePrincipalToken(*oauthConfig, clientID, clientSecret, azure.PublicCloud.ResourceManagerEndpoint)
-	onErrorFail(err, "NewServicePrincipalToken failed")
+	onErrorFail(err, "Getting authentication token: NewServicePrincipalToken failed")
 
 	createClients(subscriptionID, spToken)
 }
@@ -215,7 +215,7 @@ func buildNIRs(nics []network.Interface) []compute.NetworkInterfaceReference {
 		nir := compute.NetworkInterfaceReference{
 			ID: nic.ID,
 		}
-		if *nic.Name == nicNameFrontEnd {
+		if nic.Name != nil && *nic.Name == nicNameFrontEnd {
 			fmt.Printf("\t%v is assigned to the primary NIR\n", nicNameFrontEnd)
 			nir.NetworkInterfaceReferenceProperties = &compute.NetworkInterfaceReferenceProperties{
 				Primary: to.BoolPtr(true),
@@ -329,6 +329,7 @@ func getEnvVarOrExit(varName string) string {
 func onErrorFail(err error, message string) {
 	if err != nil {
 		fmt.Printf("%s: %s\n", message, err)
+		groupClient.Delete(groupName, nil)
 		os.Exit(1)
 	}
 }
