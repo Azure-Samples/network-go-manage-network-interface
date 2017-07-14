@@ -15,7 +15,7 @@ author: mcardosos
 
 ## Running this Sample
 
-1. If you don't already have it, [install Go 1.7](https://golang.org/dl/).
+1. If you don't already have it, [install Go](https://golang.org/dl/).
 
 1. Clone the repository.
 

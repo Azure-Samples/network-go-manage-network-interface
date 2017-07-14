@@ -3,13 +3,16 @@ package main
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/Azure/azure-sdk-for-go/arm/compute"
 	"github.com/Azure/azure-sdk-for-go/arm/network"
 	"github.com/Azure/azure-sdk-for-go/arm/resources/resources"
 	"github.com/Azure/azure-sdk-for-go/arm/storage"
+	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
 	"github.com/Azure/go-autorest/autorest/to"
+	"github.com/Azure/go-autorest/autorest/utils"
 )
 
 const (
@@ -43,28 +46,27 @@ var (
 )
 
 func init() {
-	subscriptionID := getEnvVarOrExit("AZURE_SUBSCRIPTION_ID")
-	tenantID := getEnvVarOrExit("AZURE_TENANT_ID")
+	authorizer, err := utils.GetAuthorizer(azure.PublicCloud)
+	onErrorFail(err, "GetAuthorizer failed")
 
-	oauthConfig, err := azure.PublicCloud.OAuthConfigForTenant(tenantID)
-	onErrorFail(err, "Getting authentication token: OAuthConfigForTenant failed")
-
-	clientID := getEnvVarOrExit("AZURE_CLIENT_ID")
-	clientSecret := getEnvVarOrExit("AZURE_CLIENT_SECRET")
-	spToken, err := azure.NewServicePrincipalToken(*oauthConfig, clientID, clientSecret, azure.PublicCloud.ResourceManagerEndpoint)
-	onErrorFail(err, "Getting authentication token: NewServicePrincipalToken failed")
-
-	createClients(subscriptionID, spToken)
+	subscriptionID := utils.GetEnvVarOrExit("AZURE_SUBSCRIPTION_ID")
+	createClients(subscriptionID, authorizer)
 }
 
 func main() {
 	createResourceGroup()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go createStorageAccount(&wg)
+
 	createVirtualNetwork()
 	subnets := createSubnets()
 	pip1 := createPIP("pip1")
 	nics := createNICs(subnets, pip1)
-	createStorageAccount()
 	nirs := buildNIRs(nics)
+
+	wg.Wait()
 	createVM(nirs)
 	pip2 := createPIP("pip2")
 	updateNICwithPIP(nicNameFrontEnd, nics, pip2)
@@ -86,7 +88,7 @@ func main() {
 
 func createResourceGroup() {
 	fmt.Println("Create resource group")
-	resourceGroup := resources.ResourceGroup{
+	resourceGroup := resources.Group{
 		Location: to.StringPtr(westUS),
 	}
 	_, err := groupClient.CreateOrUpdate(groupName, resourceGroup)
@@ -103,8 +105,8 @@ func createVirtualNetwork() {
 			},
 		},
 	}
-	_, err := vNetClient.CreateOrUpdate(groupName, vNetName, vNet, nil)
-	onErrorFail(err, "CreateOrUpdate failed")
+	_, errChan := vNetClient.CreateOrUpdate(groupName, vNetName, vNet, nil)
+	onErrorFail(<-errChan, "CreateOrUpdate failed")
 }
 
 func createSubnets() []network.Subnet {
@@ -117,8 +119,8 @@ func createSubnets() []network.Subnet {
 	for i, n := range subnetNames {
 		fmt.Printf("\tCreate subnet: '%s'\n", n)
 		subnet.AddressPrefix = to.StringPtr(fmt.Sprintf("172.16.%v.0/24", i+1))
-		_, err := subnetClient.CreateOrUpdate(groupName, vNetName, n, subnet, nil)
-		onErrorFail(err, "\tCreateOrUpdate failed")
+		_, errChan := subnetClient.CreateOrUpdate(groupName, vNetName, n, subnet, nil)
+		onErrorFail(<-errChan, "\tCreateOrUpdate failed")
 
 		subnetInfo, err := subnetClient.Get(groupName, vNetName, n, "")
 		onErrorFail(err, "\tGet failed")
@@ -139,11 +141,11 @@ func createPIP(pipName string) network.PublicIPAddress {
 			},
 		},
 	}
-	_, err := addressClient.CreateOrUpdate(groupName, pipName, pip, nil)
-	onErrorFail(err, "CreateOrUpdate failed")
+	_, errChan := addressClient.CreateOrUpdate(groupName, pipName, pip, nil)
+	onErrorFail(<-errChan, "CreateOrUpdate failed")
 
 	fmt.Println("Get public IP address")
-	pip, err = addressClient.Get(groupName, pipName, "")
+	pip, err := addressClient.Get(groupName, pipName, "")
 	onErrorFail(err, "Get failed")
 
 	return pip
@@ -184,8 +186,8 @@ func createNICs(subnets []network.Subnet, pip network.PublicIPAddress) []network
 			(*nic.IPConfigurations)[0].PublicIPAddress = nil
 		}
 
-		_, err := interfacesClient.CreateOrUpdate(groupName, n, nic, nil)
-		onErrorFail(err, "CreateOrUpdate failed")
+		_, errChan := interfacesClient.CreateOrUpdate(groupName, n, nic, nil)
+		onErrorFail(<-errChan, "CreateOrUpdate failed")
 
 		nicInfo, err := interfacesClient.Get(groupName, n, "")
 		onErrorFail(err, "Get failed")
@@ -195,16 +197,18 @@ func createNICs(subnets []network.Subnet, pip network.PublicIPAddress) []network
 	return nics
 }
 
-func createStorageAccount() {
-	fmt.Println("Create storage account")
+func createStorageAccount(wg *sync.WaitGroup) {
+	fmt.Println("Starting to create storage account...")
 	account := storage.AccountCreateParameters{
 		Sku: &storage.Sku{
 			Name: storage.StandardLRS},
 		Location: to.StringPtr(westUS),
 		AccountPropertiesCreateParameters: &storage.AccountPropertiesCreateParameters{},
 	}
-	_, err := accountClient.Create(groupName, accountName, account, nil)
-	onErrorFail(err, "Create failed")
+	_, errChan := accountClient.Create(groupName, accountName, account, nil)
+	onErrorFail(<-errChan, "Create failed")
+	fmt.Println("... storage account created")
+	wg.Done()
 }
 
 func buildNIRs(nics []network.Interface) []compute.NetworkInterfaceReference {
@@ -266,8 +270,8 @@ func createVM(nirs []compute.NetworkInterfaceReference) {
 
 	vm.VirtualMachineProperties.NetworkProfile.NetworkInterfaces = &nirs
 
-	_, err := vmClient.CreateOrUpdate(groupName, vmName, vm, nil)
-	onErrorFail(err, "CreateOrUpdate failed")
+	_, errChan := vmClient.CreateOrUpdate(groupName, vmName, vm, nil)
+	onErrorFail(<-errChan, "CreateOrUpdate failed")
 
 }
 
@@ -281,8 +285,8 @@ func updateNICwithPIP(nicName string, nics []network.Interface, pip network.Publ
 	fmt.Printf("Update NIC '%s' with PIP '%s'\n", nicName, *pip.Name)
 	(*nics[index].IPConfigurations)[0].PublicIPAddress = &pip
 	(*nics[index].IPConfigurations)[0].Primary = to.BoolPtr(true)
-	_, err := interfacesClient.CreateOrUpdate(groupName, nicName, nics[index], nil)
-	onErrorFail(err, "CreateOrUpdate failed")
+	_, errChan := interfacesClient.CreateOrUpdate(groupName, nicName, nics[index], nil)
+	onErrorFail(<-errChan, "CreateOrUpdate failed")
 }
 
 func listNICs() {
@@ -301,28 +305,17 @@ func listNICs() {
 func deleteNIC(nicName string) {
 	fmt.Println("Delete NIC")
 	fmt.Println("\tFirst, delete the VM")
-	_, err := vmClient.Delete(groupName, vmName, nil)
-	onErrorFail(err, "Delete failed")
+	_, errChan := vmClient.Delete(groupName, vmName, nil)
+	onErrorFail(<-errChan, "Delete failed")
 	fmt.Println("\tSecond, delete the NIC")
-	_, err = interfacesClient.Delete(groupName, nicName, nil)
-	onErrorFail(err, "Delete failed")
+	_, errChan = interfacesClient.Delete(groupName, nicName, nil)
+	onErrorFail(<-errChan, "Delete failed")
 }
 
 func deleteResourceGroup() {
 	fmt.Println("Deleting resource group")
-	_, err := groupClient.Delete(groupName, nil)
-	onErrorFail(err, "Delete failed")
-}
-
-// getEnvVarOrExit returns the value of specified environment variable or terminates if it's not defined.
-func getEnvVarOrExit(varName string) string {
-	value := os.Getenv(varName)
-	if value == "" {
-		fmt.Printf("Missing environment variable %s\n", varName)
-		os.Exit(1)
-	}
-
-	return value
+	_, errChan := groupClient.Delete(groupName, nil)
+	onErrorFail(<-errChan, "Delete failed")
 }
 
 // onErrorFail prints a failure message and exits the program if err is not nil.
@@ -346,25 +339,34 @@ func printNIC(nic network.Interface) {
 	fmt.Println()
 }
 
-func createClients(subscriptionID string, spToken *azure.ServicePrincipalToken) {
+func createClients(subscriptionID string, authorizer *autorest.BearerAuthorizer) {
+	sampleUA := fmt.Sprintf("sample/0010/%s", utils.GetCommit())
+
 	groupClient = resources.NewGroupsClient(subscriptionID)
-	groupClient.Authorizer = spToken
+	groupClient.Authorizer = authorizer
+	groupClient.Client.AddToUserAgent(sampleUA)
 
 	vNetClient = network.NewVirtualNetworksClient(subscriptionID)
-	vNetClient.Authorizer = spToken
+	vNetClient.Authorizer = authorizer
+	vNetClient.Client.AddToUserAgent(sampleUA)
 
 	subnetClient = network.NewSubnetsClient(subscriptionID)
-	subnetClient.Authorizer = spToken
+	subnetClient.Authorizer = authorizer
+	subnetClient.Client.AddToUserAgent(sampleUA)
 
 	addressClient = network.NewPublicIPAddressesClient(subscriptionID)
-	addressClient.Authorizer = spToken
+	addressClient.Authorizer = authorizer
+	addressClient.Client.AddToUserAgent(sampleUA)
 
 	interfacesClient = network.NewInterfacesClient(subscriptionID)
-	interfacesClient.Authorizer = spToken
+	interfacesClient.Authorizer = authorizer
+	interfacesClient.Client.AddToUserAgent(sampleUA)
 
 	accountClient = storage.NewAccountsClient(subscriptionID)
-	accountClient.Authorizer = spToken
+	accountClient.Authorizer = authorizer
+	accountClient.Client.AddToUserAgent(sampleUA)
 
 	vmClient = compute.NewVirtualMachinesClient(subscriptionID)
-	vmClient.Authorizer = spToken
+	vmClient.Authorizer = authorizer
+	vmClient.Client.AddToUserAgent(sampleUA)
 }
